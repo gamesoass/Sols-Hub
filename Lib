@@ -1,0 +1,853 @@
+--// MenuLibRetro.lua
+--// Flat dark / crimson menu library: top tabs, boxed groups, checkbox toggles,
+--// slim sliders, dropdowns, buttons, labels and a watermark bar.
+--//
+--//   local Library = loadstring(game:HttpGet("https://your-url/MenuLibRetro.lua"))()
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+-- Swap these to change the whole look
+local FONT = Enum.Font.BuilderSans
+local BOLD_FONT = Enum.Font.BuilderSansBold
+local TEXT_SIZE = 14
+
+local THEME = {
+	Window = Color3.fromRGB(13, 13, 13),
+	Border = Color3.fromRGB(46, 46, 46),
+	Panel = Color3.fromRGB(17, 17, 17),
+	PanelBorder = Color3.fromRGB(38, 38, 38),
+	Box = Color3.fromRGB(26, 26, 26),
+	BoxHover = Color3.fromRGB(34, 34, 34),
+	BoxBorder = Color3.fromRGB(0, 0, 0),
+	Accent = Color3.fromRGB(40, 120, 230),
+	Text = Color3.fromRGB(215, 215, 215),
+	TextBright = Color3.fromRGB(240, 240, 240),
+	TextDim = Color3.fromRGB(115, 115, 115),
+	TextOff = Color3.fromRGB(70, 70, 70),
+}
+
+--------------------------------------------------------------------------------
+-- helpers
+--------------------------------------------------------------------------------
+
+local function create(class, props, children)
+	local inst = Instance.new(class)
+	local parent = props.Parent
+	props.Parent = nil
+	for key, value in pairs(props) do
+		inst[key] = value
+	end
+	for _, child in ipairs(children or {}) do
+		child.Parent = inst
+	end
+	inst.Parent = parent
+	return inst
+end
+
+local function stroke(color, thickness)
+	return create("UIStroke", {
+		Color = color,
+		Thickness = thickness or 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	})
+end
+
+local function padding(top, bottom, left, right)
+	return create("UIPadding", {
+		PaddingTop = UDim.new(0, top),
+		PaddingBottom = UDim.new(0, bottom),
+		PaddingLeft = UDim.new(0, left),
+		PaddingRight = UDim.new(0, right),
+	})
+end
+
+local function text(props)
+	props.BackgroundTransparency = 1
+	props.BorderSizePixel = 0
+	props.Font = props.Font or FONT
+	props.TextSize = props.TextSize or TEXT_SIZE
+	props.TextColor3 = props.TextColor3 or THEME.Text
+	props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+	return create("TextLabel", props)
+end
+
+local function mountGui(gui)
+	local candidates = {
+		function() return gethui and gethui() end,
+		function() return game:GetService("CoreGui") end,
+		function() return Players.LocalPlayer:WaitForChild("PlayerGui") end,
+	}
+	for _, getTarget in ipairs(candidates) do
+		local ok, target = pcall(getTarget)
+		if ok and target then
+			local parented = pcall(function()
+				gui.Parent = target
+			end)
+			if parented and gui.Parent == target then
+				return
+			end
+		end
+	end
+end
+
+local function isPress(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function isMove(input)
+	return input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function nextOrder(group)
+	group._order = (group._order or 0) + 1
+	return group._order
+end
+
+local function elementFrame(group, height)
+	return create("Frame", {
+		Size = UDim2.new(1, 0, 0, height),
+		BackgroundTransparency = 1,
+		LayoutOrder = nextOrder(group),
+		Parent = group.Body,
+	})
+end
+
+--------------------------------------------------------------------------------
+-- classes
+--------------------------------------------------------------------------------
+
+local Library = {}
+Library.__index = Library
+
+local Tab = {}
+Tab.__index = Tab
+
+local Group = {}
+Group.__index = Group
+
+local fpsValue, fpsConnection = 60, nil
+
+-- Library.FPS() -> smoothed frames per second (handy for the watermark)
+function Library.FPS()
+	if not fpsConnection then
+		fpsConnection = RunService.Heartbeat:Connect(function(dt)
+			if dt > 0 then
+				fpsValue = fpsValue * 0.9 + (1 / dt) * 0.1
+			end
+		end)
+	end
+	return math.floor(fpsValue + 0.5)
+end
+
+--------------------------------------------------------------------------------
+-- window
+--------------------------------------------------------------------------------
+
+-- Library.new("name<a>xx</a> | uid 1337", Enum.KeyCode.RightShift, Color3.fromRGB(190, 20, 60))
+-- Text between <a></a> is drawn in the accent color. Key and accent are optional.
+function Library.new(title, toggleKey, accent)
+	if accent then
+		THEME.Accent = accent
+	end
+
+	local self = setmetatable({}, Library)
+	self.Tabs = {}
+	self.ActiveTab = nil
+	self._connections = {}
+	self._toggleKey = toggleKey or Enum.KeyCode.RightShift
+
+	self.Gui = create("ScreenGui", {
+		Name = "MenuLib_" .. tostring(math.random(1000, 9999)),
+		ResetOnSpawn = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	})
+	mountGui(self.Gui)
+
+self.Main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(400, 440),
+    Position = UDim2.new(0.5, -200, 0.5, -220),
+    BackgroundColor3 = THEME.Window,
+    BorderSizePixel = 0,
+    Parent = self.Gui,
+}, { stroke(Color3.new(1, 1, 1), 2) })
+local richTitle = (tostring(title or "menu")
+    :gsub("<a>", '<font color="#' .. THEME.Accent:ToHex() .. '">')
+    :gsub("</a>", "</font>"))
+
+	local topbar = create("Frame", {
+		Name = "Topbar",
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundTransparency = 1,
+		Parent = self.Main,
+	})
+
+	text({
+		Text = richTitle,
+		RichText = true,
+		Font = BOLD_FONT,
+		TextColor3 = THEME.TextBright,
+		Size = UDim2.new(1, -20, 1, 0),
+		Position = UDim2.fromOffset(10, 0),
+		Parent = topbar,
+	})
+
+	self.TabBar = create("Frame", {
+		Name = "TabBar",
+		Size = UDim2.new(1, -16, 0, 24),
+		Position = UDim2.fromOffset(8, 28),
+		BackgroundTransparency = 1,
+		Parent = self.Main,
+	})
+
+	create("Frame", {
+		Size = UDim2.new(1, -16, 0, 1),
+		Position = UDim2.fromOffset(8, 52),
+		BackgroundColor3 = THEME.Border,
+		BorderSizePixel = 0,
+		Parent = self.Main,
+	})
+
+	self.Content = create("Frame", {
+		Name = "Content",
+		Size = UDim2.new(1, 0, 1, -54),
+		Position = UDim2.fromOffset(0, 54),
+		BackgroundTransparency = 1,
+		Parent = self.Main,
+	})
+
+	-- drag by the title bar
+	local dragging, dragStart, startPos = false, nil, nil
+	table.insert(self._connections, topbar.InputBegan:Connect(function(input)
+		if isPress(input) then
+			dragging = true
+			dragStart = input.Position
+			startPos = self.Main.Position
+		end
+	end))
+	table.insert(self._connections, UserInputService.InputChanged:Connect(function(input)
+		if dragging and isMove(input) then
+			local delta = input.Position - dragStart
+			self.Main.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end))
+	table.insert(self._connections, UserInputService.InputEnded:Connect(function(input)
+		if isPress(input) then
+			dragging = false
+		end
+	end))
+
+	-- show / hide hotkey
+	table.insert(self._connections, UserInputService.InputBegan:Connect(function(input, processed)
+		if not processed and input.KeyCode == self._toggleKey then
+			self.Main.Visible = not self.Main.Visible
+		end
+	end))
+
+	return self
+end
+
+local function makeColumn(parent, side)
+	return create("ScrollingFrame", {
+		Size = UDim2.new(0.5, -13, 1, -16),
+		Position = side == "left" and UDim2.new(0, 8, 0, 8) or UDim2.new(0.5, 5, 0, 8),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 2,
+		ScrollBarImageColor3 = THEME.Accent,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Parent = parent,
+	}, {
+		create("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }),
+		-- room for group titles that sit on the top border
+		create("UIPadding", { PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 4) }),
+	})
+end
+
+function Library:Tab(name)
+	local tab = setmetatable({}, Tab)
+	tab.Window = self
+	tab._counts = { left = 0, right = 0 }
+
+	tab.Button = create("TextButton", {
+		Name = name,
+		BackgroundTransparency = 1,
+		Text = name,
+		TextColor3 = THEME.TextDim,
+		Font = FONT,
+		TextSize = TEXT_SIZE,
+		AutoButtonColor = false,
+		Parent = self.TabBar,
+	})
+
+	tab.Underline = create("Frame", {
+		Size = UDim2.new(1, -12, 0, 2),
+		Position = UDim2.new(0, 6, 1, -2),
+		BackgroundColor3 = THEME.Accent,
+		BorderSizePixel = 0,
+		Visible = false,
+		Parent = tab.Button,
+	})
+
+	tab.Page = create("Frame", {
+		Name = name,
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Visible = false,
+		Parent = self.Content,
+	})
+	tab.Columns = {
+		left = makeColumn(tab.Page, "left"),
+		right = makeColumn(tab.Page, "right"),
+	}
+
+	table.insert(self.Tabs, tab)
+
+	-- spread the tab buttons evenly across the bar
+	local count = #self.Tabs
+	for index, t in ipairs(self.Tabs) do
+		t.Button.Size = UDim2.new(1 / count, 0, 1, 0)
+		t.Button.Position = UDim2.new((index - 1) / count, 0, 0, 0)
+	end
+
+	tab.Button.MouseButton1Click:Connect(function()
+		self:SelectTab(tab)
+	end)
+	if not self.ActiveTab then
+		self:SelectTab(tab)
+	end
+	return tab
+end
+
+function Library:SelectTab(tab)
+	for _, t in ipairs(self.Tabs) do
+		local active = (t == tab)
+		t.Page.Visible = active
+		t.Underline.Visible = active
+		t.Button.TextColor3 = active and THEME.TextBright or THEME.TextDim
+	end
+	self.ActiveTab = tab
+end
+
+function Library:_defaultTab()
+	if not self._default then
+		self._default = self:Tab("Main")
+	end
+	return self._default
+end
+
+function Library:Destroy()
+	for _, connection in ipairs(self._connections) do
+		connection:Disconnect()
+	end
+	self._connections = {}
+	if self.Gui then
+		self.Gui:Destroy()
+	end
+end
+
+-- Window:Watermark({ "name", function() return "fps:" .. Library.FPS() end, "build:beta" })
+-- Parts can be strings or functions returning strings; they refresh 4 times a second.
+function Library:Watermark(parts, position)
+	local box = create("Frame", {
+		Name = "Watermark",
+		Size = UDim2.fromOffset(0, 22),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Position = position or UDim2.fromOffset(14, 14),
+		BackgroundColor3 = THEME.Window,
+		BorderSizePixel = 0,
+		Parent = self.Gui,
+	}, { stroke(THEME.Border, 1), padding(0, 0, 8, 8) })
+
+	create("Frame", {
+		Size = UDim2.new(1, 16, 0, 1),
+		Position = UDim2.fromOffset(-8, 0),
+		BackgroundColor3 = THEME.Accent,
+		BorderSizePixel = 0,
+		Parent = box,
+	})
+
+	local label = text({
+		RichText = true,
+		Size = UDim2.fromOffset(0, 22),
+		AutomaticSize = Enum.AutomaticSize.X,
+		TextColor3 = THEME.Text,
+		Parent = box,
+	})
+
+	local separator = string.format(' <font color="#%s">/</font> ', THEME.Accent:ToHex())
+	local function refresh()
+		local out = {}
+		for _, part in ipairs(parts) do
+			local value = part
+			if type(part) == "function" then
+				local ok, result = pcall(part)
+				value = ok and result or "?"
+			end
+			table.insert(out, tostring(value))
+		end
+		label.Text = table.concat(out, separator)
+	end
+
+	refresh()
+	task.spawn(function()
+		while box.Parent do
+			refresh()
+			task.wait(0.25)
+		end
+	end)
+
+	return box
+end
+
+--------------------------------------------------------------------------------
+-- groups (the boxed sections)
+--------------------------------------------------------------------------------
+
+-- Tab:Group("Title", "left" | "right")  -- side is optional, it balances the columns
+function Tab:Group(name, side)
+	if side ~= "left" and side ~= "right" then
+		side = (self._counts.left <= self._counts.right) and "left" or "right"
+	end
+	self._counts[side] += 1
+
+	local group = setmetatable({}, Group)
+	group.Tab = self
+	group.Window = self.Window
+
+	group.Frame = create("Frame", {
+		Size = UDim2.new(1, 0, 0, 30),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = THEME.Panel,
+		BorderSizePixel = 0,
+		LayoutOrder = self._counts[side],
+		Parent = self.Columns[side],
+	}, { stroke(THEME.PanelBorder, 1) })
+
+	-- accent line along the top edge, interrupted by the title
+	create("Frame", {
+		Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = THEME.Accent,
+		BorderSizePixel = 0,
+		Parent = group.Frame,
+	})
+
+	local title = text({
+		Text = name,
+		Size = UDim2.fromOffset(0, 14),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Position = UDim2.fromOffset(8, -7),
+		TextColor3 = THEME.Text,
+		ZIndex = 2,
+		Parent = group.Frame,
+	})
+	title.BackgroundTransparency = 0
+	title.BackgroundColor3 = THEME.Panel
+	create("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3), Parent = title })
+
+	group.Body = create("Frame", {
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Parent = group.Frame,
+	}, {
+		create("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }),
+		padding(12, 10, 8, 8),
+	})
+
+	return group
+end
+
+function Tab:_defaultGroup()
+	if not self._default then
+		self._default = self:Group("Main", "left")
+	end
+	return self._default
+end
+
+--------------------------------------------------------------------------------
+-- elements
+--------------------------------------------------------------------------------
+
+-- Group:Toggle("Name", defaultState, function(enabled) ... end)
+-- Group:Toggle("Name", function(enabled) ... end)
+-- Returns: :Set(bool) :Get() :SetDisabled(bool) :Bind(Enum.KeyCode | nil)
+function Group:Toggle(name, default, callback)
+	if type(default) == "function" then
+		callback, default = default, false
+	end
+	callback = callback or function() end
+	local state = default and true or false
+	local disabled = false
+	local boundKey = nil
+
+	local frame = elementFrame(self, 16)
+
+	local box = create("Frame", {
+		Size = UDim2.fromOffset(9, 9),
+		Position = UDim2.fromOffset(0, 4),
+		BackgroundColor3 = THEME.Box,
+		BorderSizePixel = 0,
+		Parent = frame,
+	}, { stroke(THEME.BoxBorder, 1) })
+
+	local label = text({
+		Text = name,
+		Size = UDim2.new(1, -50, 1, 0),
+		Position = UDim2.fromOffset(16, 0),
+		Parent = frame,
+	})
+
+	local tag = text({
+		Text = "",
+		Size = UDim2.fromOffset(40, 16),
+		Position = UDim2.new(1, -40, 0, 0),
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextColor3 = THEME.TextDim,
+		Parent = frame,
+	})
+
+	local hit = create("TextButton", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		ZIndex = 3,
+		Parent = frame,
+	})
+
+	local object = {}
+
+	local function render()
+		if disabled then
+			box.BackgroundColor3 = THEME.Box
+			label.TextColor3 = THEME.TextOff
+		else
+			box.BackgroundColor3 = state and THEME.Accent or THEME.Box
+			label.TextColor3 = THEME.Text
+		end
+	end
+	render()
+
+	function object:Set(value, silent)
+		state = value and true or false
+		render()
+		if not silent then
+			task.spawn(callback, state)
+		end
+	end
+
+	function object:Get()
+		return state
+	end
+
+	function object:SetDisabled(value)
+		disabled = value and true or false
+		render()
+	end
+
+	function object:Bind(keyCode)
+		boundKey = keyCode
+		tag.Text = keyCode and ("[" .. keyCode.Name .. "]") or ""
+	end
+
+	hit.MouseButton1Click:Connect(function()
+		if not disabled then
+			object:Set(not state)
+		end
+	end)
+
+	table.insert(self.Window._connections, UserInputService.InputBegan:Connect(function(input, processed)
+		if boundKey and not processed and not disabled and input.KeyCode == boundKey then
+			object:Set(not state)
+		end
+	end))
+
+	return object
+end
+
+-- Group:Button("Name", function() ... end)
+function Group:Button(name, callback)
+	callback = callback or function() end
+
+	local button = create("TextButton", {
+		Size = UDim2.new(1, 0, 0, 20),
+		BackgroundColor3 = THEME.Box,
+		BorderSizePixel = 0,
+		Text = name,
+		TextColor3 = THEME.Text,
+		Font = FONT,
+		TextSize = TEXT_SIZE,
+		AutoButtonColor = false,
+		LayoutOrder = nextOrder(self),
+		Parent = self.Body,
+	}, { stroke(THEME.BoxBorder, 1) })
+
+	button.MouseEnter:Connect(function()
+		button.BackgroundColor3 = THEME.BoxHover
+	end)
+	button.MouseLeave:Connect(function()
+		button.BackgroundColor3 = THEME.Box
+	end)
+	button.MouseButton1Click:Connect(function()
+		task.spawn(callback)
+	end)
+
+	return button
+end
+
+-- Group:Slider("Name", min, max, default, function(value) ... end, step)
+-- Returns: :Set(number) :Get()
+function Group:Slider(name, min, max, default, callback, step)
+	callback = callback or function() end
+	step = step or 1
+	local value = math.clamp(default or min, min, max)
+
+	local frame = elementFrame(self, 28)
+
+	text({
+		Text = name,
+		Size = UDim2.new(1, -50, 0, 14),
+		Parent = frame,
+	})
+
+	local valueLabel = text({
+		Text = tostring(value),
+		Size = UDim2.fromOffset(50, 14),
+		Position = UDim2.new(1, -50, 0, 0),
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextColor3 = THEME.TextDim,
+		Parent = frame,
+	})
+
+	local bar = create("Frame", {
+		Size = UDim2.new(1, 0, 0, 9),
+		Position = UDim2.fromOffset(0, 17),
+		BackgroundColor3 = THEME.Box,
+		BorderSizePixel = 0,
+		Parent = frame,
+	}, { stroke(THEME.BoxBorder, 1) })
+
+	local fill = create("Frame", {
+		Size = UDim2.fromScale((value - min) / (max - min), 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+		Parent = bar,
+	}, {
+		create("UIGradient", {
+			Rotation = 90,
+			Color = ColorSequence.new(
+				THEME.Accent:Lerp(Color3.new(1, 1, 1), 0.12),
+				THEME.Accent:Lerp(Color3.new(0, 0, 0), 0.35)
+			),
+		}),
+	})
+
+	local hit = create("TextButton", {
+		Size = UDim2.new(1, 0, 0, 18),
+		Position = UDim2.fromOffset(0, 12),
+		BackgroundTransparency = 1,
+		Text = "",
+		Parent = frame,
+	})
+
+	local object = {}
+
+	local function apply(raw, silent)
+		local snapped = math.clamp(math.round(raw / step) * step, min, max)
+		value = tonumber(string.format("%.4f", snapped))
+		fill.Size = UDim2.fromScale((value - min) / (max - min), 1)
+		valueLabel.Text = tostring(value)
+		if not silent then
+			task.spawn(callback, value)
+		end
+	end
+
+	function object:Set(newValue, silent)
+		apply(newValue, silent)
+	end
+
+	function object:Get()
+		return value
+	end
+
+	local function fromInput(input)
+		local alpha = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+		apply(min + (max - min) * alpha, false)
+	end
+
+	local dragging = false
+	hit.InputBegan:Connect(function(input)
+		if isPress(input) then
+			dragging = true
+			fromInput(input)
+		end
+	end)
+	table.insert(self.Window._connections, UserInputService.InputChanged:Connect(function(input)
+		if dragging and isMove(input) then
+			fromInput(input)
+		end
+	end))
+	table.insert(self.Window._connections, UserInputService.InputEnded:Connect(function(input)
+		if isPress(input) then
+			dragging = false
+		end
+	end))
+
+	return object
+end
+
+-- Group:Dropdown("Name", { "A", "B", "C" }, "A", function(choice) ... end)
+-- Returns: :Set(choice) :Get()
+function Group:Dropdown(name, options, default, callback)
+	callback = callback or function() end
+	local selected = default or options[1]
+	local open = false
+	local rowHeight = 16
+
+	local frame = elementFrame(self, 36)
+
+	text({
+		Text = name,
+		Size = UDim2.new(1, 0, 0, 14),
+		Parent = frame,
+	})
+
+	local box = create("Frame", {
+		Size = UDim2.new(1, 0, 0, 18),
+		Position = UDim2.fromOffset(0, 16),
+		BackgroundColor3 = THEME.Box,
+		BorderSizePixel = 0,
+		Parent = frame,
+	}, { stroke(THEME.BoxBorder, 1) })
+
+	local valueLabel = text({
+		Text = tostring(selected),
+		Size = UDim2.new(1, -26, 1, 0),
+		Position = UDim2.fromOffset(6, 0),
+		TextColor3 = THEME.TextBright,
+		Parent = box,
+	})
+
+	local plus = text({
+		Text = "+",
+		Size = UDim2.fromOffset(18, 18),
+		Position = UDim2.new(1, -18, 0, 0),
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextColor3 = THEME.TextBright,
+		Parent = box,
+	})
+
+	local hit = create("TextButton", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		Parent = box,
+	})
+
+	local list = create("Frame", {
+		Size = UDim2.new(1, 0, 0, #options * rowHeight),
+		Position = UDim2.fromOffset(0, 36),
+		BackgroundColor3 = THEME.Box,
+		BorderSizePixel = 0,
+		Visible = false,
+		Parent = frame,
+	}, { stroke(THEME.BoxBorder, 1) })
+
+	local optionButtons = {}
+	local object = {}
+
+	local function refreshOptions()
+		for choice, button in pairs(optionButtons) do
+			button.TextColor3 = (choice == selected) and THEME.Accent or THEME.Text
+		end
+	end
+
+	function object:Set(choice, silent)
+		selected = choice
+		valueLabel.Text = tostring(choice)
+		refreshOptions()
+		if not silent then
+			task.spawn(callback, choice)
+		end
+	end
+
+	function object:Get()
+		return selected
+	end
+
+	for index, choice in ipairs(options) do
+		local optionButton = create("TextButton", {
+			Size = UDim2.new(1, 0, 0, rowHeight),
+			Position = UDim2.fromOffset(0, (index - 1) * rowHeight),
+			BackgroundTransparency = 1,
+			Text = tostring(choice),
+			TextColor3 = THEME.Text,
+			Font = FONT,
+			TextSize = TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			AutoButtonColor = false,
+			Parent = list,
+		}, { padding(0, 0, 6, 0) })
+		optionButtons[choice] = optionButton
+
+		optionButton.MouseButton1Click:Connect(function()
+			object:Set(choice)
+			open = false
+			list.Visible = false
+			plus.Text = "+"
+			frame.Size = UDim2.new(1, 0, 0, 36)
+		end)
+	end
+	refreshOptions()
+
+	hit.MouseButton1Click:Connect(function()
+		open = not open
+		list.Visible = open
+		plus.Text = open and "-" or "+"
+		frame.Size = UDim2.new(1, 0, 0, open and (38 + #options * rowHeight) or 36)
+	end)
+
+	return object
+end
+
+-- Group:Label("text") -> :Set("new text")
+function Group:Label(content)
+	local label = text({
+		Text = content,
+		Size = UDim2.new(1, 0, 0, 14),
+		TextColor3 = THEME.TextDim,
+		LayoutOrder = nextOrder(self),
+		Parent = self.Body,
+	})
+
+	return {
+		Set = function(_, newText)
+			label.Text = newText
+		end,
+	}
+end
+
+--------------------------------------------------------------------------------
+-- shortcuts: skip groups / tabs and add elements straight to the tab or window
+--------------------------------------------------------------------------------
+
+for _, method in ipairs({ "Toggle", "Button", "Slider", "Dropdown", "Label" }) do
+	Tab[method] = function(self, ...)
+		local group = self:_defaultGroup()
+		return group[method](group, ...)
+	end
+	Library[method] = function(self, ...)
+		local tab = self:_defaultTab()
+		return tab[method](tab, ...)
+	end
+end
+
+return Library
